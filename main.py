@@ -2,7 +2,6 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from telegram import Update, ChatMember, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram_bot_calendar import DetailedTelegramCalendar
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters, ChatMemberHandler,
     CallbackQueryHandler
@@ -13,7 +12,7 @@ from bson import ObjectId
 import re
 from phonenumbers import parse, is_valid_number, NumberParseException
 from email_validator import validate_email, EmailNotValidError
-import json
+# import json
 # from bson.json_util import dumps
 
 
@@ -35,6 +34,7 @@ db = client["padel_bot"]
 admins_collection = db["admins"]
 groups_collection = db["groups"]
 members_collection = db["members"]
+member_group_collection = db["member_groups"]
 
 
 # Helper function to check if a user is an admin
@@ -49,9 +49,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     logger.info("[start] args: %s", ', '.join(args))
 
-    if args and args[0].startswith("join_"):
-        group_id = args[0].split("_")[1]
-        context.user_data['group_id'] = group_id
+    if args:
+        context.user_data['group_id'] = str(args[0])
 
         keyboard = [
             [InlineKeyboardButton("Join Group 🎾", callback_data='start_join')]
@@ -59,7 +58,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await update.message.reply_text(
-            "Click the button below to register in the group:",
+            "Hello! 👋\nI'm a racket sports bot 🎾.\n"
+            + "I will guide you through the process of registration and participation.\n"
+            + "First, we need to register you.\nClick the button below to register in the group:",
             reply_markup=reply_markup
         )
 
@@ -264,12 +265,12 @@ async def invite_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     join_link = f"https://t.me/{bot_username}?start={group_id}"
 
     keyboard = [
-        [InlineKeyboardButton("Join Padel Group 🎾", url=join_link)]
+        [InlineKeyboardButton("Join This Group 🎾", url=join_link)]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "Click the button below to register for the game:",
+        "Click the button below to register for the game:\n",
         reply_markup=reply_markup
     )
 
@@ -301,6 +302,7 @@ async def start_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if group_id is None:
         await update.message.reply_text("Usage: /join <group_id>")
         return ConversationHandler.END
+    logger.info("New member tries to join. User ID: %s Group ID: %s", user_id, group_id)
 
     message = None
     if update.message is not None:
@@ -315,12 +317,30 @@ async def start_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(error_message)
         return ConversationHandler.END
 
-    context.user_data['group_id'] = group_id
-    # Check if user is already registered in this group
-    member_db_record = members_collection.find_one({"user_id": user_id, "group_id": group_id, "status": {"$nin": ["banned"]}})
-    if member_db_record is not None:
-        await message.reply_text("You are already registered in this group.")
+    member = members_collection.find_one({"user_id": user_id})
+    if member is not None:
+        admin = admins_collection.find_one({"groups": str(group_id)})
+        if not admin:
+            await message.reply_text(
+                f"I cannot find the group you want to register in. Here is the group ID: *{group_id}*\n"
+                + "Please, contact the group administrator.",
+                parse_mode="Markdown"
+            )
+            return ConversationHandler.END
+
+        member_group_record = member_group_collection.find_one({"user_id": user_id, "group_id": group_id})
+        if member_group_record is not None:
+            await message.reply_text("You are already registered in this group.")
+            return ConversationHandler.END
+        member_group_collection.insert_one({
+            "user_id": user_id,
+            "group_id": group_id,
+            "status": "active"
+        })
+        await message.reply_text("You are successfully registered!")
         return ConversationHandler.END
+
+    context.user_data['group_id'] = group_id
 
     await message.reply_text(
         "Welcome! Let's get you registered.\nPlease enter your *Name* (at least 3 letters):",
@@ -397,25 +417,26 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "registration_surname": context.user_data['surname'],
         "registration_phone_number": context.user_data['phone'],
         "registration_email": context.user_data['email'],
-        "group_id": context.user_data['group_id'],
+        "group_ids": [context.user_data['group_id']],
         "user_id": user.id,
         "messenger_first_name": user.first_name,
         "messenger_last_name": user.last_name,
         "messenger_username": user.username,
         "created_at": datetime.utcnow(),
-        "status": "active",
-        "comment": "",
-        "blocked_till": None
     }
     members_collection.insert_one(member_data)
+    member_group_collection.insert_one({
+        "user_id": user.id,
+        "group_id": context.user_data['group_id'],
+    })
 
     await update.message.reply_text("🎉 You have been registered successfully!")
-
 
     # Notify Admin
     await context.bot.send_message(
         chat_id=admin["admin_id"],
         text=f"📢 New member registered:\n*Name:* {member_data['registration_name']} {member_data['registration_surname']}\n"
+             + f"*Username*: {member_data['messenger_username']}\n"
              + f"*Phone:* {member_data['registration_phone_number']}\n*Group:*{group['name']}",
         parse_mode='Markdown'
     )
@@ -450,12 +471,20 @@ async def join_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         group_query = {"group_id": update.effective_chat.id}
         try:
-            match_date = datetime.strptime(args[0], "%d-%m-%Y").date()
+            match_date = datetime.strptime(args[0], "%d.%m.%Y").date()
         except (ValueError, IndexError):
-            await update.message.reply_text("Please specify a valid match date (DD-MM-YYYY). For example, 23.11.2023")
+            await update.message.reply_text("Please specify a valid match date (DD.MM.YYYY). For example, 23.11.2023")
             return
 
     group = groups_collection.find_one({**group_query, "deleted_at": None})
+    member_group_collection.find_one({
+        "user_id": user_id,
+        "group_id": group['group_id'],
+        "status": {"$ne": "active"}
+    })
+    if member_group_collection is not None:
+        await update.message.reply_text("You cannot join matches in this group. Please, contact the administrator.")
+        return
     if not group:
         await update.message.reply_text("This group has been deleted or does not exist.")
         return
@@ -485,7 +514,7 @@ async def join_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if registered_count >= max_slots:
         await update.message.reply_text(
-            f"You are successfully registered for the match on {match_date}",
+            f"You are added to the waiting list for the match on *{match_date}* with number {registered_count + 1}",
             parse_mode='Markdown'
         )
         return
