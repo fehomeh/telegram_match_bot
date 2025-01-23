@@ -1,0 +1,29 @@
+services:
+  mongo:
+    image: mongo
+    volumes:
+      - "./playground:/tmp/playground"
+      - type: volume
+        source: mongodb_data_volume
+        target: /data/db
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=adm1n
+      - MONGO_INITDB_ROOT_PASSWORD=qweRTY09
+    ports:
+      - "27017:27017"
+#  app:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    ports:
+#      - "8000:5000"
+#    volumes:
+#      - ./src:/code
+#  playground:
+#    image: debian
+#    privileged: true
+#    volumes:
+#      - "./playground:/tmp/playground"
+volumes:
+  mongodb_data_volume:
+    external: true

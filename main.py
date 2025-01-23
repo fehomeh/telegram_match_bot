@@ -2,6 +2,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from telegram import Update, ChatMember, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters, ChatMemberHandler,
     CallbackQueryHandler
@@ -12,9 +13,12 @@ from bson import ObjectId
 import re
 from phonenumbers import parse, is_valid_number, NumberParseException
 from email_validator import validate_email, EmailNotValidError
+from bot.spreadsheet import is_spreadsheet_writable
 # import json
 # from bson.json_util import dumps
 
+# TODO: Globals
+# Split bot commands per channel and per bot, disallow personal command in the channel
 
 # Load environment variables
 load_dotenv()
@@ -65,7 +69,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif admins_collection.find_one({"admin_id": user_id}):
-        await update.message.reply_text("You're already registered as an admin!")
+        await update.message.reply_text(
+            "You're already registered as an admin! If you want to add a new group, use /addgroup command."
+        )
     else:
         await update.message.reply_text(
             "Welcome to the Padel Game Bot! \n"
@@ -136,8 +142,11 @@ async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Conversation to add group step-by-step
 async def start_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Let's add your group! First, please send me your Telegram Group ID.\n"
-        "Tip: You can get the group ID by adding this bot to the group and using the command /getgroupid."
+        "🚨 Before we start, make sure that you granted write access to the spreadsheet "
+        + "to the following email: *padelfunbot@padelfun.iam.gserviceaccount.com*\n"
+        + "Now, let's add your group!\n First, please send me your Telegram Group ID.\n"
+        + "Tip: You can get the group ID by adding this bot to the group and using the command /getgroupid.",
+        parse_mode="Markdown"
     )
     return GROUP_ID
 
@@ -158,7 +167,7 @@ async def receive_group_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['group_name'] = update.message.text
     await update.message.reply_text(
         "Nice! Let's set match registration window in weeks.\n"
-        "For example: 3 means that players will be able to register for games in upcoming three weeks."
+        "For example: 3 means that players will be able to register for games in three upcoming weeks."
     )
     return WEEK_RANGE
 
@@ -170,6 +179,16 @@ async def receive_week_range(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def receive_spreadsheet_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    spreadsheet_url = update.message.text
+    update.message.reply_text("Give me a second, I will check if I can access the given spreadsheet")
+    context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    if not is_spreadsheet_writable(spreadsheet_url):
+        await update.message.reply_text(
+            "⛔ I cannot write into given spreadsheet.\n Please, check the url, make sure that email"
+            + f" *{os.getenv('GOOGLE_SERVICE_ACCOUNT_EMAIL')}* has write access to it or contact bot administrator and try again.",
+            parse_mode="Markdown"
+        )
+        return SPREADSHEET_LINK
     context.user_data['spreadsheet'] = update.message.text
     await update.message.reply_text("Finally, how many courts are available?")
     return COURT_LIMIT
@@ -201,11 +220,22 @@ async def receive_court_limit(update: Update, context: ContextTypes.DEFAULT_TYPE
         "registration_open_till": datetime(day=open_till.day, month=open_till.month, year=open_till.year)
     })
     admins_collection.update_one({"admin_id": user_id}, {"$push": {"groups": group_id}})
-    await update.message.reply_text(
-        f"Group '{group_name}' has been added successfully!"
+    update.message.reply_text(
+        f"Group *'{group_name}'* has been added successfully!"
         + f" Match registration is open till {open_till.strftime('%d.%m.%Y')} with the current match registration window.",
         reply_markup=ReplyKeyboardRemove()
     )
+    update.message.reply_text(
+        "Now, I'm creating a new worksheet in the given spreadsheet for the given registration window.\n"
+        "Please, give me a moment...",
+    )
+    context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    # TODO: Create a tab
+    await update.message.reply_text(
+        "Done! You can check out the spreadsheet if your schedule looks correct:",
+        f""
+    )
+
     return ConversationHandler.END
 
 
@@ -232,7 +262,10 @@ async def delete_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     group_id = context.args[0]
-    result = groups_collection.update_one({"group_id": group_id, "admin_id": user_id}, {"$set": {"is_deleted": True}})
+    result = groups_collection.update_one(
+        {"group_id": group_id, "admin_id": user_id},
+        {"$set": {"deleted_at": datetime.now(timezone.utc)}}
+    )
     if result.modified_count > 0:
         await update.message.reply_text(f"Group {group_id} has been soft deleted.")
     else:
@@ -270,7 +303,7 @@ async def invite_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "Click the button below to register for the game:\n",
+        "Click the button below to register for games in this group:\n",
         reply_markup=reply_markup
     )
 
@@ -511,15 +544,18 @@ async def join_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     registered_count = db.matches.count_documents({"group_id": group['group_id'], "match_date": match_date})
     max_slots = group['court_limit'] * 4
+    current_player_order_number = registered_count + 1
 
     if registered_count >= max_slots:
         await update.message.reply_text(
-            f"You are added to the waiting list for the match on *{match_date}* with number {registered_count + 1}",
+            f"You are added to the waiting list for the match on *{match_date}* with number {current_player_order_number}",
             parse_mode='Markdown'
         )
         return
 
-    await update.message.reply_text(f"You are successfully registered for the match on {match_date}!")
+    await update.message.reply_text(
+        f"You are successfully registered for the match on {match_date} as number {current_player_order_number} in the list!"
+    )
 
 
 # Cancel Participation
@@ -544,7 +580,7 @@ async def cancel_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def replace_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) != 2:
-        await update.message.reply_text("Usage: /replace_player @username DD.MM.YYYY")
+        await update.message.reply_text("Usage: /replace_player @telegram_username DD.MM.YYYY")
         return
 
     username = args[0]
@@ -583,6 +619,14 @@ async def replace_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                    f"You have been added to the match on {date_str}!")
 
 
+    # List player games for the next period.
+    async def list_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Check if player participates in more than one group.
+        # No: list games for the single group
+        # Yes: ask the group name from the list
+        pass
+
+
 # ========== END OF MEMBER FUNCTIONS ===============
 
 # ========== UTILS =====================
@@ -610,6 +654,7 @@ async def help_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + "/join - to join the group as a member.\n"
             + "/help - to see this message.\n"
         )
+
 # Conversation states
 GROUP_ID, GROUP_NAME, WEEK_RANGE, SPREADSHEET_LINK, COURT_LIMIT = range(5)
 
@@ -655,7 +700,7 @@ def main():
 
     app.add_handler(CommandHandler('join_match', join_match))
     app.add_handler(CommandHandler('cancel_match', cancel_match))
-    app.add_handler(CommandHandler('replace_player', replace_player))
+    app.add_handler(CommandHandler('replace_me', replace_player))
     app.add_handler(join_handler)
 
     # Utils handlers
