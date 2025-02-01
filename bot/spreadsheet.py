@@ -3,6 +3,8 @@ import gspread
 from google.oauth2 import service_account
 import os
 
+from gspread import WorksheetNotFound
+
 
 def is_spreadsheet_writable(spreadsheet_url: str) -> bool:
     try:
@@ -28,3 +30,13 @@ def create_worksheet(spreadsheet_url: str, name: str, rows: int, cols: int) -> g
     client = get_spreadsheet_client()
     spreadsheet = client.open_by_url(spreadsheet_url)
     return spreadsheet.add_worksheet(name, rows, cols)
+
+
+def has_worksheet_with_name(spreadsheet_url: str, worksheet_name: str) -> bool:
+    client = get_spreadsheet_client()
+    spreadsheet = client.open_by_url(spreadsheet_url)
+    try:
+        spreadsheet.worksheet(worksheet_name)
+        return True
+    except WorksheetNotFound:
+        return False
