@@ -441,7 +441,7 @@ async def start_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group_id = str(group_id)
     context.user_data['group_id'] = group_id
 
-    if update.effective_chat.type != CHAT_TYPE_PRIVATE:
+    if not is_private_chat(update):
         join_link = await generate_join_link(update, context)
         await message.reply_text(
             f"You cannot join the community in the group.\nPlease, follow the link to join the group: {join_link}"
@@ -593,7 +593,7 @@ async def register_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
 
     logger.info("[join_match] effective chat type: %s", update.effective_chat.type)
-    if update.effective_chat.type == CHAT_TYPE_PRIVATE:
+    if is_private_chat(update):
         if len(args) < 2:
             await update.message.reply_text(
                 "Usage in direct bot conversation: /register_game <group_id> <DD.MM.YYYY>\n"
@@ -672,7 +672,10 @@ async def register_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # Cancel Participation
-async def cancel_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_private_chat(update):
+        await update.message.reply_text("You can cancel participation in the group only")
+        return
     user_id = update.effective_user.id
     group_id = str(update.effective_chat.id)
     if len(context.args) != 1:
@@ -700,6 +703,7 @@ async def cancel_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Replace Player Command
 async def replace_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # TODO: Replace with conversation
     args = context.args
     if len(args) != 3:
         await update.message.reply_text("Usage: /replace_player <group ID or name> @telegram_username DD.MM.YYYY")
@@ -879,6 +883,10 @@ async def generate_join_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return f"https://t.me/{bot_username}?start=join_{group_id}"
 
 
+def is_private_chat(update: Update) -> bool:
+    return update.effective_chat.type == CHAT_TYPE_PRIVATE
+
+
 # Conversation states
 GROUP_ID, GROUP_NAME, WEEKDAY, WEEK_RANGE, SPREADSHEET_LINK, COURT_LIMIT = range(6)
 
@@ -925,7 +933,7 @@ def main():
     )
 
     app.add_handler(CommandHandler('register_game', register_game))
-    app.add_handler(CommandHandler('cancel_game', cancel_match))
+    app.add_handler(CommandHandler('cancel_game', cancel_game))
     app.add_handler(CommandHandler('replace_player', replace_player))
     app.add_handler(CommandHandler('list_matches', list_matches))
     app.add_handler(join_handler)
