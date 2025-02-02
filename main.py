@@ -147,11 +147,18 @@ async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Conversation to add group step-by-step
 async def start_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admin = admins_collection.find_one({"admin_id": int(update.effective_user.id)})
+    if not admin:
+        await update.message.reply_text(
+            "🚫 You are not registered as admin. Please, use the /signup command to signup as administrator first."
+        )
+        return ConversationHandler.END
     await update.message.reply_text(
         "🚨 *Before we start*, make sure that you granted write access to the spreadsheet "
         + "to the following email: *padelfunbot@padelfun.iam.gserviceaccount.com*\n\n\n"
-        + "Now, let's add your group!\nFirst, please send me your Telegram Group ID.\n"
-        + "Tip: You can get the group ID by adding this bot to the group and using the command /getgroupid.",
+        + "Now, let's add your group!\n"
+        + "*Tip*: You can get the group ID by adding this bot to the group and using the command /getgroupid.\n\n"
+        + "Please, send your Telegram Group ID.",
         parse_mode="Markdown"
     )
     return GROUP_ID
@@ -181,7 +188,8 @@ async def receive_group_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def receive_weekday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_invalid_weekday(update.message.text):
         await update.message.reply_text(
-            "Wrong week day.\nPossible values are: " + ", ".join(weekDaysMapping) + "\n"
+            "Wrong week day.\nPossible values are: " + ", ".join(weekDaysMapping)
+            + "\n\nPlease, try again."
         )
         return WEEKDAY
     context.user_data['weekday'] = update.message.text
@@ -240,19 +248,22 @@ async def receive_court_limit(update: Update, context: ContextTypes.DEFAULT_TYPE
     })
     admins_collection.update_one({"admin_id": user_id}, {"$push": {"groups": group_id}})
     await update.message.reply_text(
-        f"Group *'{group_name}'* has been added successfully!"
-        + f" Match registration is open till {open_till.strftime('%d.%m.%Y')} with the current match registration window.",
-        reply_markup=ReplyKeyboardRemove()
+        f"🎉 Group *{group_name}* has been added successfully!\n"
+        + f" Match registration is open till *{open_till.strftime('%d.%m.%Y')}*.",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="Markdown"
     )
     await update.message.reply_text(
         "Now, I'm creating a new worksheet in the given spreadsheet for the given registration window.\n"
-        "Please, give me a moment...",
+        "This may take a while...\nPlease, wait.",
     )
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
     sheet_name = generate_worksheet_name('Americano', now, registration_open_till)
     if has_worksheet_with_name(spreadsheet, sheet_name):
-        await update.message.reply_text(f"Worksheet with name {sheet_name} already exists. Skipping worksheet creation.")
+        await update.message.reply_text(
+            f"Worksheet with name '{sheet_name}' already exists."
+        )
         return
     player_count = calculate_player_count_for_courts(court_limit)
     days_in_period = (registration_open_till - now).days
@@ -264,8 +275,8 @@ async def receive_court_limit(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     fill_spreadsheet_blank(days_in_period, weekday_number, now, player_count, worksheet)
     await update.message.reply_text(
-        "Done! You can check out the spreadsheet if your schedule looks correct:",
-        f"{worksheet.url}"
+        "Done!\nYou can check out the spreadsheet if your schedule looks correct: "
+        + f"{worksheet.url}"
     )
 
     return ConversationHandler.END
@@ -850,13 +861,13 @@ def fill_spreadsheet_blank(
             player_number = 1
             # Insert numbers for players on game day
             for j in range(player_start_row, player_start_row + player_count):
-                worksheet.update_cell(j, i, player_number)
+                worksheet.update_cell(j, i, str(player_number))
                 player_number = player_number + 1
             # Insert waiting list title and numbers after
             worksheet.update_cell(player_start_row + player_count + 1, i, "Waiting list")
             player_number = 1
             for j in range(player_start_row + player_count + 2, player_start_row + player_count + 2 + player_count):
-                worksheet.update_cell(j, i, player_number)
+                worksheet.update_cell(j, i, str(player_number))
                 player_number = player_number + 1
 
         next_date = next_date + timedelta(days=1)
