@@ -17,10 +17,6 @@ from phonenumbers import parse, is_valid_number, NumberParseException
 from email_validator import validate_email, EmailNotValidError
 from bot.spreadsheet import is_spreadsheet_writable, has_worksheet_with_name, create_worksheet
 import json
-# from bson.json_util import dumps
-
-# TODO: Globals
-# Split bot commands per channel and per bot, disallow personal command in the channel
 
 # Load environment variables
 load_dotenv()
@@ -81,15 +77,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif admins_collection.find_one({"admin_id": user_id}):
         await update.message.reply_text(
-            "You're already registered as an admin! If you want to add a new group, use /addgroup command."
+            "You're already registered as an admin! If you want to add a new group, use /add_group command."
         )
     else:
         await update.message.reply_text(
-            "Welcome to the Padel Game Bot! \n"
-            + "If you want to become a member of the group, use /join command\n"
+            "Welcome to the Padel Game Bot!\n"
+            + "If you want to become a member of the group, use /join <group_id> command\n"
             + "If you want to become a community admin, Please, add me to your group or channel first."
-            + " Fetch the group via /getgroupid command.\n"
-            + " Then, use /signup to register as a community admin.")
+            + " Fetch the group via /get_group_id command.\n"
+            + "Then, use /signup to register as a community admin.")
 
 
 # Detect new group members and send a private invite
@@ -131,7 +127,7 @@ async def signup(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "groups": [],
             "created_at": datetime.now(timezone.utc)
         })
-        await update.message.reply_text("%s, you're now registered as an admin! Use /addgroup to add your groups." % (user.username))
+        await update.message.reply_text("%s, you're now registered as an admin! Use /add_group to add your groups." % (user.username))
     else:
         await update.message.reply_text(
             "You're already registered as *%s %s.*" % (admin_record['first_name'], admin_record['last_name']),
@@ -139,7 +135,7 @@ async def signup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# Command: /getgroupid
+# Command: /get_group_id
 async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     await update.message.reply_text(f"This group's ID is: {chat_id}")
@@ -157,7 +153,7 @@ async def start_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚨 *Before we start*, make sure that you granted write access to the spreadsheet "
         + "to the following email: *padelfunbot@padelfun.iam.gserviceaccount.com*\n\n\n"
         + "Now, let's add your group!\n"
-        + "*Tip*: You can get the group ID by adding this bot to the group and using the command /getgroupid.\n\n"
+        + "*Tip*: You can get the group ID by adding this bot to the group and using the command /get_group_id.\n\n"
         + "Please, send your Telegram Group ID.",
         parse_mode="Markdown"
     )
@@ -180,7 +176,7 @@ async def receive_group_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['group_name'] = update.message.text
     await update.message.reply_text(
         "Good! What is a weekday of matches?\n"
-        "Hint: Type in the full day name in English. For instance, Thursday"
+        "Hint: Type in the full day name in English.\nIt can be one of: " + ", ".join(weekDaysMapping)
     )
     return WEEKDAY
 
@@ -287,7 +283,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# Command: /listgroups
+# Command: /list_groups
 async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     groups = groups_collection.find({"admin_id": user_id, "deleted_at": None})
@@ -297,11 +293,11 @@ async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(response if response != "Your groups:\n" else "You have no active groups.")
 
 
-# Command: /deletegroup <group_id>
+# Command: /delete_group <group_id>
 async def delete_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if len(context.args) != 1:
-        await update.message.reply_text("Usage: /deletegroup <group_id>")
+        await update.message.reply_text("Usage: /delete_group <group_id>")
         return
 
     group_id = context.args[0]
@@ -315,11 +311,11 @@ async def delete_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Group not found or you don't have permission to delete it.")
 
 
-# Command: /updatesheet <group_id> <new_spreadsheet_link>
+# Command: /update_sheet <group_id> <new_spreadsheet_link>
 async def update_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if len(context.args) != 2:
-        await update.message.reply_text("Usage: /updatesheet group_id new_spreadsheet_link")
+        await update.message.reply_text("Usage: /update_sheet <group_id> <new_spreadsheet_link>")
         return
 
     group_id, new_spreadsheet_link = context.args
@@ -381,7 +377,7 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
     if not group:
         await update.message.reply_text(f"⛔ Group ID {group_id} not found!")
         return
-    # TODO: Refactor for reuse
+
     start_period = group['registration_open_till']
     end_period = start_period + timedelta(weeks=group['week_range'])
     sheet_name = generate_worksheet_name('Americano', start_period, end_period)
@@ -409,7 +405,7 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
     # Update registration_open_till in the group if everything succeeds
     await context.bot.send_message(
         chat_id=group_id,
-        text=f"📢 Match registration is now open till *{end_period.strftime('%d.%m.%Y')}*\n Use /join_match to register for a game.",
+        text=f"📢 Match registration is now open till *{end_period.strftime('%d.%m.%Y')}*\n Use /join_game to register for a game.",
         parse_mode="Markdown"
     )
     # Send the link to a new worksheet in the file
@@ -593,7 +589,7 @@ async def cancel_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # Participation Command
-async def join_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def register_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
 
@@ -681,7 +677,7 @@ async def cancel_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     group_id = str(update.effective_chat.id)
     if len(context.args) != 1:
-        await update.message.reply_text("Usage /cancel_match <DD.MM.YYYY>. For example, 21.11.2022")
+        await update.message.reply_text("Usage /cancel_game <DD.MM.YYYY>. For example, 21.11.2022")
         return
     try:
         match_date = datetime.strptime(context.args[0], "%d.%m.%Y")
@@ -699,7 +695,7 @@ async def cancel_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Your participation has been canceled.")
     else:
         await update.message.reply_text(
-            "It's less than 48 hours till the game. Please provide a replacement using /replace_player <username>."
+            "It's less than 48 hours till the game. Please provide a replacement using /replace_player"
         )
 
 
@@ -745,12 +741,12 @@ async def replace_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Replacement successful! {username} will now play on {date_str}.")
     await context.bot.send_message(
         member['user_id'],
-        f"You have been added to the match on {date_str}!\n Use /cancel_match if you want to cancel your participation."
+        f"You have been added to the match on {date_str}!\n Use /cancel_game if you want to cancel your participation."
     )
 
 
 # List player games for the next period.
-async def list_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check if player participates in more than one group.
         user_id = update.effective_user.id
         member_groups = member_group_collection.find({"user_id": user_id, "status": "active"})
@@ -799,21 +795,21 @@ async def help_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + "/start - to get a welcome message and walk you through the registration process.\n"
             + "*Administration commands:*\n"
             + "/signup - to register as an admin.\n"
-            + "/addgroup - to add a new group or a channel to manage.\n"
-            + "/listgroups - to see your registered groups in this bot.\n"
-            + "/deletegroup - to delete one of the registered groups in this bot.\n"
-            + "/updatesheet - to update the spreadsheet link for one of the groups.\n"
+            + "/add\_group - to add a new group or a channel to manage.\n"
+            + "/list\_groups - to see your registered groups in this bot.\n"
+            + "/delete\_group - to delete one of the registered groups in this bot.\n"
+            + "/update\_sheet - to update the spreadsheet link for one of the groups.\n"
             + "/invite - Invite new members to go through registration process.\n"
             + "/open\_match\_registration - Open the match registration window for the next period.\n"
             + "*Member commands:*\n"
             + "/join - to join the group as a member.\n"
-            + "/join\_match - to register for a game.\n"
-            + "/cancel\_match - to cancel game participation.\n"
-            + "/replace\_me - to replace your participation with other players.\n"
-            + "/list\_games - list player future games.\n"
+            + "/register\_game - to register for a game.\n"
+            + "/cancel\_game - to cancel game participation.\n"
+            + "/replace\_player - to replace your participation with other players.\n"
+            + "/list\_matches - list player future games.\n"
             + "*Common commands:*\n"
             + "/help - to see this message.\n"
-            + "/getgroupid - add this bot to your channel to get group ID for registration.\n",
+            + "/get_group_id - add this bot to your channel to get group ID for registration.\n",
             parse_mode="Markdown"
         )
 
@@ -888,7 +884,7 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     add_group_handler = ConversationHandler(
-        entry_points=[CommandHandler('addgroup', start_add_group)],
+        entry_points=[CommandHandler('add_group', start_add_group)],
         states={
             GROUP_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_group_id)],
             GROUP_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_group_name)],
@@ -902,11 +898,11 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("signup", signup))
-    app.add_handler(CommandHandler("getgroupid", get_group_id))
+    app.add_handler(CommandHandler("get_group_id", get_group_id))
     app.add_handler(add_group_handler)
-    app.add_handler(CommandHandler("listgroups", list_groups))
-    app.add_handler(CommandHandler("deletegroup", delete_group))
-    app.add_handler(CommandHandler("updatesheet", update_sheet))
+    app.add_handler(CommandHandler("list_groups", list_groups))
+    app.add_handler(CommandHandler("delete_group", delete_group))
+    app.add_handler(CommandHandler("update_sheet", update_sheet))
     app.add_handler(ChatMemberHandler(check_admin_rights, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     app.add_handler(CommandHandler("invite", invite_members))
@@ -924,10 +920,10 @@ def main():
         fallbacks=[CommandHandler('cancel', cancel_join)]
     )
 
-    app.add_handler(CommandHandler('join_match', join_match))
-    app.add_handler(CommandHandler('cancel_match', cancel_match))
-    app.add_handler(CommandHandler('replace_me', replace_player))
-    app.add_handler(CommandHandler('list_games', list_games))
+    app.add_handler(CommandHandler('register_game', register_game))
+    app.add_handler(CommandHandler('cancel_game', cancel_match))
+    app.add_handler(CommandHandler('replace_player', replace_player))
+    app.add_handler(CommandHandler('list_matches', list_matches))
     app.add_handler(join_handler)
 
     # Utils handlers
