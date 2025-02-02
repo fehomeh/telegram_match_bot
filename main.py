@@ -284,7 +284,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # Command: /list_groups
-async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def list_admin_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     groups = groups_collection.find({"admin_id": user_id, "deleted_at": None})
     response = "Your groups:\n"
@@ -554,7 +554,6 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "registration_surname": context.user_data['surname'],
         "registration_phone_number": context.user_data['phone'],
         "registration_email": context.user_data['email'],
-        "group_ids": [context.user_data['group_id']],
         "user_id": user.id,
         "messenger_first_name": user.first_name,
         "messenger_last_name": user.last_name,
@@ -597,13 +596,13 @@ async def register_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == CHAT_TYPE_PRIVATE:
         if len(args) < 2:
             await update.message.reply_text(
-                "Please specify the group name or ID and match date (DD.MM.YYYY) to join."
-                + " For example, 23.11.2023"
+                "Usage in direct bot conversation: /register_game <group_id> <DD.MM.YYYY>\n"
+                + " For example, /register_game -1263178999 23.11.2023"
             )
             return
         group_query = {"$or": [{"group_id": str(args[0])}, {"name": str(args[0])}]}
         try:
-            match_date = datetime.strptime(args[1], "%d.%m.%Y")
+            match_date = datetime.strptime(args[1], "%d.%m.%Y").replace(tzinfo=timezone.utc)
         except ValueError:
             await update.message.reply_text("Invalid date format. Use DD.MM.YYYY. For example, 23.11.2023")
             return
@@ -702,13 +701,20 @@ async def cancel_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Replace Player Command
 async def replace_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
-    if len(args) != 2:
-        await update.message.reply_text("Usage: /replace_player @telegram_username DD.MM.YYYY")
+    if len(args) != 3:
+        await update.message.reply_text("Usage: /replace_player <group ID or name> @telegram_username DD.MM.YYYY")
         return
 
-    username = args[0]
-    date_str = args[1]
-    # TODO: Missing group ID
+    group_id_or_name = args[0]
+    username = args[1]
+    date_str = args[2]
+    group_search_criteria = {"name": group_id_or_name}
+    if group_id_or_name.replace("-", "", 1).isdigit():
+        group_search_criteria = {"group_id": group_id_or_name}
+
+    group = groups_collection.find_one(group_search_criteria)
+    if not group:
+        await update.message.reply_text(f"Group '{group_id_or_name}' not found. Contact administrator.")
 
     if not re.match(r'@\w+', username):
         await update.message.reply_text("Invalid username format. Use @username")
@@ -725,23 +731,24 @@ async def replace_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Group member for replacement not found.")
         return
 
-    if matches_collection.find_one({"match_date": match_date, "user_id": member['user_id']}):
+    if matches_collection.find_one({"match_date": match_date, "user_id": member["user_id"], "group_id": group["group_id"]}):
         await update.message.reply_text("The specified member is already registered for this match date.")
         return
 
-    existing_match = db.matches.find_one({"match_date": match_date, "user_id": update.effective_user.id})
+    existing_match = db.matches.find_one({"match_date": match_date, "user_id": update.effective_user.id, "group_id": group["group_id"]})
     if not existing_match:
         await update.message.reply_text("You are not registered for this match date.")
         return
 
     matches_collection.update_one(
         {"_id": existing_match['_id']},
-        {"$set": {"user_id": member["user_id"]}}
+        {"$set": {"user_id": member["user_id"], "registered_at": datetime.now(timezone.utc)}}
     )
     await update.message.reply_text(f"Replacement successful! {username} will now play on {date_str}.")
     await context.bot.send_message(
         member['user_id'],
-        f"You have been added to the match on {date_str}!\n Use /cancel_game if you want to cancel your participation."
+        f"You have been added to the match on {date_str} by {update.effective_user.username}!\n"
+        + " Use /cancel_game if you want to cancel your participation."
     )
 
 
@@ -776,10 +783,7 @@ async def list_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ========== END OF MEMBER FUNCTIONS ===============
-
 # ========== UTILS =====================
-
-
 # Error handler
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(msg=f"Exception while handling an update: {update}", exc_info=context.error)
@@ -796,7 +800,7 @@ async def help_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + "*Administration commands:*\n"
             + "/signup - to register as an admin.\n"
             + "/add\_group - to add a new group or a channel to manage.\n"
-            + "/list\_groups - to see your registered groups in this bot.\n"
+            + "/list\_admin\_groups - to see your registered groups in this bot.\n"
             + "/delete\_group - to delete one of the registered groups in this bot.\n"
             + "/update\_sheet - to update the spreadsheet link for one of the groups.\n"
             + "/invite - Invite new members to go through registration process.\n"
@@ -809,7 +813,7 @@ async def help_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + "/list\_matches - list player future games.\n"
             + "*Common commands:*\n"
             + "/help - to see this message.\n"
-            + "/get_group_id - add this bot to your channel to get group ID for registration.\n",
+            + "/get\_group\_id - add this bot to your channel to get group ID for registration.\n",
             parse_mode="Markdown"
         )
 
@@ -900,7 +904,7 @@ def main():
     app.add_handler(CommandHandler("signup", signup))
     app.add_handler(CommandHandler("get_group_id", get_group_id))
     app.add_handler(add_group_handler)
-    app.add_handler(CommandHandler("list_groups", list_groups))
+    app.add_handler(CommandHandler("list_admin_groups", list_admin_groups))
     app.add_handler(CommandHandler("delete_group", delete_group))
     app.add_handler(CommandHandler("update_sheet", update_sheet))
     app.add_handler(ChatMemberHandler(check_admin_rights, ChatMemberHandler.MY_CHAT_MEMBER))
