@@ -1,5 +1,7 @@
 import logging
 import os
+
+import gspread
 import pymongo
 from datetime import datetime, timedelta, timezone
 from telegram import Update, ChatMember, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -10,12 +12,11 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from bson import ObjectId
 import re
 from phonenumbers import parse, is_valid_number, NumberParseException
 from email_validator import validate_email, EmailNotValidError
 from bot.spreadsheet import is_spreadsheet_writable, has_worksheet_with_name, create_worksheet
-# import json
+import json
 # from bson.json_util import dumps
 
 # TODO: Globals
@@ -32,6 +33,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Connect to MongoDB
 client = MongoClient(MONGO_URI)
@@ -42,12 +44,15 @@ members_collection = db["members"]
 member_group_collection = db["member_groups"]
 matches_collection = db['matches']
 
+# Global variables
 
 # Mapping of the week day
 weekDaysMapping = ("Monday", "Tuesday",
                    "Wednesday", "Thursday",
                    "Friday", "Saturday",
                    "Sunday")
+CHAT_TYPE_PRIVATE = "private"
+
 
 # Helper function to check if a user is an admin
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -59,13 +64,12 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     user_id = update.effective_user.id
-    logger.info("[start] args: %s", ', '.join(args))
+    logger.info("[start] args: %s", ", ".join(args))
 
-    if args:
-        context.user_data['group_id'] = str(args[0])
-
+    if len(args) > 0:
+        context.user_data["group_id"] = args[0]
         keyboard = [
-            [InlineKeyboardButton("Join Group 🎾", callback_data='start_join')]
+            [InlineKeyboardButton("Join Group 🎾", callback_data="start_join")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -75,7 +79,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + "First, we need to register you.\nClick the button below to register in the group:",
             reply_markup=reply_markup
         )
-
     elif admins_collection.find_one({"admin_id": user_id}):
         await update.message.reply_text(
             "You're already registered as an admin! If you want to add a new group, use /addgroup command."
@@ -94,12 +97,8 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     for new_member in update.message.new_chat_members:
         if new_member.is_bot:
             continue  # Ignore bots
-
-        group_id = update.effective_chat.id
-        bot_username = (await context.bot.get_me()).username
-
         # Create a direct link to the /join command with the group ID
-        join_link = f"https://t.me/{bot_username}?start=join_{group_id}"
+        join_link = await generate_join_link(update, context)
 
         try:
             # Send a private message to the new member
@@ -125,13 +124,12 @@ async def signup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     admin_record = admins_collection.find_one({"admin_id": user_id})
     if not admin_record:
         admins_collection.insert_one({
-            "_id": ObjectId(),
             "admin_id": user_id,
             "username": user.username,
             "first_name": user.first_name,
             "last_name": user.last_name,
             "groups": [],
-            "created_at": datetime.utcnow()
+            "created_at": datetime.now(timezone.utc)
         })
         await update.message.reply_text("%s, you're now registered as an admin! Use /addgroup to add your groups." % (user.username))
     else:
@@ -150,9 +148,9 @@ async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Conversation to add group step-by-step
 async def start_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚨 Before we start, make sure that you granted write access to the spreadsheet "
-        + "to the following email: *padelfunbot@padelfun.iam.gserviceaccount.com*\n"
-        + "Now, let's add your group!\n First, please send me your Telegram Group ID.\n"
+        "🚨 *Before we start*, make sure that you granted write access to the spreadsheet "
+        + "to the following email: *padelfunbot@padelfun.iam.gserviceaccount.com*\n\n\n"
+        + "Now, let's add your group!\nFirst, please send me your Telegram Group ID.\n"
         + "Tip: You can get the group ID by adding this bot to the group and using the command /getgroupid.",
         parse_mode="Markdown"
     )
@@ -183,7 +181,7 @@ async def receive_group_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def receive_weekday(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_invalid_weekday(update.message.text):
         await update.message.reply_text(
-            "Wrong week day. Possible values are: " + ",".join(weekDaysMapping) + "\n"
+            "Wrong week day.\nPossible values are: " + ", ".join(weekDaysMapping) + "\n"
         )
         return WEEKDAY
     context.user_data['weekday'] = update.message.text
@@ -202,8 +200,8 @@ async def receive_week_range(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def receive_spreadsheet_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     spreadsheet_url = update.message.text
-    update.message.reply_text("Give me a second, I will check if I can access the given spreadsheet")
-    context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    await update.message.reply_text("Give me a second, I will check if I can access the given spreadsheet...")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
     if not is_spreadsheet_writable(spreadsheet_url):
         await send_not_available_spreadsheet_message(update.message)
         return SPREADSHEET_LINK
@@ -216,7 +214,7 @@ async def receive_court_limit(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     group_id = context.user_data['group_id']
     group_name = context.user_data['group_name']
-    weekday_number = weekDaysMapping.index(context.user_data['workday'])
+    weekday_number = weekDaysMapping.index(context.user_data['weekday'])
     spreadsheet = context.user_data['spreadsheet']
     week_range = int(context.user_data['week_range'])
     court_limit = int(update.message.text)
@@ -227,6 +225,7 @@ async def receive_court_limit(update: Update, context: ContextTypes.DEFAULT_TYPE
     days_to_add = 6 - now_with_week_range_added.weekday() + 1
     open_till = now_date + timedelta(weeks=week_range) + timedelta(days=days_to_add)
 
+    registration_open_till = datetime(day=open_till.day, month=open_till.month, year=open_till.year, tzinfo=timezone.utc)
     groups_collection.insert_one({
         "group_id": group_id,
         "name": group_name,
@@ -236,24 +235,37 @@ async def receive_court_limit(update: Update, context: ContextTypes.DEFAULT_TYPE
         "admin_id": int(user_id),
         "deleted_at": None,
         "created_at": now,
-        "registration_open_till": datetime(day=open_till.day, month=open_till.month, year=open_till.year),
+        "registration_open_till": registration_open_till,
         "game_day": weekday_number
     })
     admins_collection.update_one({"admin_id": user_id}, {"$push": {"groups": group_id}})
-    update.message.reply_text(
+    await update.message.reply_text(
         f"Group *'{group_name}'* has been added successfully!"
         + f" Match registration is open till {open_till.strftime('%d.%m.%Y')} with the current match registration window.",
         reply_markup=ReplyKeyboardRemove()
     )
-    update.message.reply_text(
+    await update.message.reply_text(
         "Now, I'm creating a new worksheet in the given spreadsheet for the given registration window.\n"
         "Please, give me a moment...",
     )
-    context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    # TODO: Create a tab
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+    sheet_name = generate_worksheet_name('Americano', now, registration_open_till)
+    if has_worksheet_with_name(spreadsheet, sheet_name):
+        await update.message.reply_text(f"Worksheet with name {sheet_name} already exists. Skipping worksheet creation.")
+        return
+    player_count = calculate_player_count_for_courts(court_limit)
+    days_in_period = (registration_open_till - now).days
+    worksheet = create_worksheet(
+        spreadsheet,
+        sheet_name,
+        calculate_spreadsheet_row_count(player_count),
+        days_in_period
+    )
+    fill_spreadsheet_blank(days_in_period, weekday_number, now, player_count, worksheet)
     await update.message.reply_text(
         "Done! You can check out the spreadsheet if your schedule looks correct:",
-        f""
+        f"{worksheet.url}"
     )
 
     return ConversationHandler.END
@@ -283,7 +295,7 @@ async def delete_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     group_id = context.args[0]
     result = groups_collection.update_one(
-        {"group_id": group_id, "admin_id": user_id},
+        {"group_id": str(group_id), "admin_id": user_id},
         {"$set": {"deleted_at": datetime.now(timezone.utc)}}
     )
     if result.modified_count > 0:
@@ -304,7 +316,7 @@ async def update_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_not_available_spreadsheet_message(update.message)
         return
     result = groups_collection.update_one(
-        {"group_id": group_id, "admin_id": user_id},
+        {"group_id": str(group_id), "admin_id": user_id},
         {"$set": {"spreadsheet": new_spreadsheet_link}}
     )
     if result.modified_count > 0:
@@ -358,6 +370,7 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
     if not group:
         await update.message.reply_text(f"⛔ Group ID {group_id} not found!")
         return
+    # TODO: Refactor for reuse
     start_period = group['registration_open_till']
     end_period = start_period + timedelta(weeks=group['week_range'])
     sheet_name = generate_worksheet_name('Americano', start_period, end_period)
@@ -368,37 +381,15 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
         f"Creating worksheet for the next period {start_period.strftime('%d.%m.%Y')}-{end_period.strftime('%d.%m.%Y')}."
         + " It will take a while. Please, wait...")
     # Create a new sheet
-    days_to_add = (end_period - start_period).days
-    player_count = group['court_limit'] * 4
+    days_in_next_period = (end_period - start_period).days
+    player_count = calculate_player_count_for_courts(group['court_limit'])
     worksheet = create_worksheet(
         group['spreadsheet'],
         sheet_name,
-        player_count * 2 + 10, # Number of players for available courts for doubled assumed waiting list, plus some ten rows for spacing
-        days_to_add
+        calculate_spreadsheet_row_count(player_count),
+        days_in_next_period
     )
-    # Mark dates for the next period in the first row
-    next_date = start_period
-    game_day = group['game_day']
-    player_start_row = 5
-    for i in range(1, days_to_add + 1):
-        worksheet.update_cell(1, i, weekDaysMapping[next_date.weekday()])
-        # Mark days for the next period in the second row
-        worksheet.update_cell(2, i, next_date.strftime("%d.%m"))
-        if next_date.weekday() == game_day:
-            worksheet.update_cell(4, i, "Player list")
-            player_number = 1
-            # Insert numbers for players on game day
-            for j in range(player_start_row, player_start_row + player_count):
-                worksheet.update_cell(j, i, player_number)
-                player_number = player_number + 1
-            # Insert waiting list title and numbers after
-            worksheet.update_cell(player_start_row + player_count + 1, i, "Waiting list")
-            player_number = 1
-            for j in range(player_start_row + player_count + 2, player_start_row + player_count + 2 + player_count):
-                worksheet.update_cell(j, i, player_number)
-                player_number = player_number + 1
-
-        next_date = next_date + timedelta(days=1)
+    fill_spreadsheet_blank(days_in_next_period, group['game_day'], start_period, player_count, worksheet)
 
     groups_collection.update_one(
         {"group_id": group["group_id"], "admin_id": group["admin_id"]},
@@ -411,7 +402,7 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
         parse_mode="Markdown"
     )
     # Send the link to a new worksheet in the file
-    await update.message.reply_text("Worksheet URL: " + worksheet.url)
+    await update.message.reply_text(f"Worksheet URL: {worksheet.url}")
 
 # ================== MEMBER FUNCTIONS ============================
 
@@ -422,16 +413,6 @@ NAME, SURNAME, PHONE, EMAIL = range(4)
 
 # Start /join <group_id>
 async def start_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    try:
-        group_id = context.user_data.get('group_id') if context.user_data else context.args[0]
-    except IndexError:
-        group_id = None
-    if group_id is None:
-        await update.message.reply_text("Usage: /join group_id")
-        return ConversationHandler.END
-    logger.info("New member tries to join. User ID: %s Group ID: %s", user_id, group_id)
-
     message = None
     if update.message is not None:
         message = update.message
@@ -439,6 +420,27 @@ async def start_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
         await update.callback_query.delete_message()
         message = update.callback_query.message
+    user_id = update.effective_user.id
+    try:
+        group_id = context.user_data["group_id"] if context.user_data else context.args[0]
+    except IndexError:
+        group_id = None
+    if group_id is None:
+        await message.reply_text("Usage: /join group_id")
+        return ConversationHandler.END
+
+    if group_id.find("join_") == 0:
+        group_id = group_id.split("_")[1]
+    group_id = str(group_id)
+    context.user_data['group_id'] = group_id
+
+    if update.effective_chat.type != CHAT_TYPE_PRIVATE:
+        join_link = await generate_join_link(update, context)
+        await message.reply_text(
+            f"You cannot join the community in the group.\nPlease, follow the link to join the group: {join_link}"
+        )
+        return ConversationHandler.END
+    logger.info("New member tries to join. User ID: %s Group ID: %s", user_id, group_id)
 
     if user_id == group_id or group_id is None:
         error_message = "Something went wrong. Please, try again from the beginning."
@@ -468,8 +470,6 @@ async def start_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("You are successfully registered!")
         return ConversationHandler.END
 
-    context.user_data['group_id'] = group_id
-
     await message.reply_text(
         "Welcome! Let's get you registered.\nPlease enter your *Name* (at least 3 letters):",
         parse_mode='Markdown'
@@ -480,7 +480,9 @@ async def start_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Validate Name
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.message.text.strip()
+    logger.info("[get_name] %s", name)
     if not re.fullmatch(r'[A-Za-z]{3,}', name):
+        logger.info("[get_name] Invalid name: %s", name)
         await update.message.reply_text("Invalid name. Please enter at least 3 letters without special characters:")
         return NAME
     context.user_data['name'] = name
@@ -556,6 +558,7 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     member_group_collection.insert_one({
         "user_id": user.id,
         "group_id": context.user_data['group_id'],
+        "status": "active"
     })
 
     await update.message.reply_text("🎉 You have been registered successfully!")
@@ -583,28 +586,37 @@ async def join_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     args = context.args
 
-    if update.effective_chat.type == "private":
+    logger.info("[join_match] effective chat type: %s", update.effective_chat.type)
+    if update.effective_chat.type == CHAT_TYPE_PRIVATE:
         if len(args) < 2:
             await update.message.reply_text(
                 "Please specify the group name or ID and match date (DD.MM.YYYY) to join."
                 + " For example, 23.11.2023"
             )
             return
-        group_query = {"$or": [{"group_id": args[0]}, {"name": args[0]}]}
+        group_query = {"$or": [{"group_id": str(args[0])}, {"name": str(args[0])}]}
         try:
-            match_date = datetime.strptime(args[1], "%d.%m.%Y").date()
+            match_date = datetime.strptime(args[1], "%d.%m.%Y")
         except ValueError:
             await update.message.reply_text("Invalid date format. Use DD.MM.YYYY. For example, 23.11.2023")
             return
     else:
-        group_query = {"group_id": update.effective_chat.id}
+        group_query = {"group_id": str(update.effective_chat.id)}
+
         try:
-            match_date = datetime.strptime(args[0], "%d.%m.%Y").date()
+            match_date = datetime.strptime(args[0], "%d.%m.%Y").replace(tzinfo=timezone.utc)
         except (ValueError, IndexError):
             await update.message.reply_text("Please specify a valid match date (DD.MM.YYYY). For example, 23.11.2023")
             return
 
+    logger.info("[join_match] query %s", json.dumps(group_query))
+    if match_date < datetime.now(timezone.utc):
+        await update.message.reply_text(f"You cannot register for matches in past.")
+        return
     group = groups_collection.find_one({**group_query, "deleted_at": None})
+    if not group:
+        await update.message.reply_text(f"Group not found.")
+        return
     member_groups = member_group_collection.find_one({
         "user_id": user_id,
         "group_id": group['group_id'],
@@ -617,11 +629,11 @@ async def join_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("This group has been deleted or does not exist.")
         return
 
-    if match_date > group['registration_open_till'].date():
+    if match_date > group['registration_open_till'].replace(tzinfo=timezone.utc):
         await update.message.reply_text("Registration period has ended.")
         return
 
-    if match_date.weekday() not in group['match_days']:
+    if match_date.weekday() != group['game_day']:
         await update.message.reply_text("Matches are not scheduled for the selected date.")
         return
 
@@ -630,45 +642,54 @@ async def join_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("You're already registered for the selected match date.")
         return
 
+    registered_count = db.matches.count_documents({"group_id": group['group_id'], "match_date": match_date})
+    # TODO: Replace naive implementation of the registration number
     db.matches.insert_one({
         "user_id": user_id,
         "group_id": group['group_id'],
         "match_date": match_date,
         "registered_at": datetime.now(timezone.utc),
     })
-
-    registered_count = db.matches.count_documents({"group_id": group['group_id'], "match_date": match_date})
     max_slots = group['court_limit'] * 4
     current_player_order_number = registered_count + 1
 
     if registered_count >= max_slots:
         await update.message.reply_text(
-            f"You are added to the waiting list for the match on *{match_date}* with number {current_player_order_number}",
+            f"You are added to the waiting list for the match on *{match_date.strftime('%d.%m.%Y')}* with number {current_player_order_number}",
             parse_mode='Markdown'
         )
         return
 
     await update.message.reply_text(
-        f"You are successfully registered for the match on {match_date} as number {current_player_order_number} in the list!"
+        f"You are successfully registered for the match on {match_date.strftime('%d.%m.%Y')} as number {current_player_order_number} in the list!"
     )
 
 
 # Cancel Participation
 async def cancel_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    group_id = update.effective_chat.id
-    match = matches_collection.find_one({"user_id": user_id, "group_id": group_id})
+    group_id = str(update.effective_chat.id)
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage /cancel_match <DD.MM.YYYY>. For example, 21.11.2022")
+        return
+    try:
+        match_date = datetime.strptime(context.args[0], "%d.%m.%Y")
+    except ValueError:
+        await update.message.reply_text("Invalid date format. Use DD.MM.YYYY. For example, 21.11.2022")
+        return
+    match = matches_collection.find_one({"user_id": user_id, "group_id": group_id, "match_date": match_date})
     if not match:
         await update.message.reply_text("You're not registered for any match.")
         return
 
-    time_diff = match['match_date'] - datetime.utcnow().date()
+    time_diff = match['match_date'].replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)
     if time_diff.days >= 2:
-        db.matches.delete_one({"_id": match['_id']})
+        matches_collection.delete_one({"_id": match['_id']})
         await update.message.reply_text("Your participation has been canceled.")
     else:
         await update.message.reply_text(
-            "It's less than 48 hours. Please provide a replacement using /replace_player <username>.")
+            "It's less than 48 hours till the game. Please provide a replacement using /replace_player <username>."
+        )
 
 
 # Replace Player Command
@@ -680,13 +701,14 @@ async def replace_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     username = args[0]
     date_str = args[1]
+    # TODO: Missing group ID
 
     if not re.match(r'@\w+', username):
         await update.message.reply_text("Invalid username format. Use @username")
         return
 
     try:
-        match_date = datetime.strptime(date_str, "%d.%m.%Y").date()
+        match_date = datetime.strptime(date_str, "%d.%m.%Y")
     except ValueError:
         await update.message.reply_text("Invalid date format. Use DD.MM.YYYY. For example, 21.11.2022")
         return
@@ -742,7 +764,7 @@ async def list_games(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for match_formatted in matches_by_group[group_name]:
                 message = message + match_formatted['match_date']
         else:
-            message = message + "You have no registered games"
+            message = message + "\nYou have no registered games"
         await update.message.reply_text(message, parse_mode="Markdown")
 
 
@@ -761,7 +783,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update and update.message:
         await update.message.reply_text(
-            "Hello!\n I can help you with managing your group for match registrations or playing games.\n"
+            "Hello!\nI can help you with managing your group for match registrations or playing games.\n"
             + "Here are the available commands:\n"
             + "/start - to get a welcome message and walk you through the registration process.\n"
             + "*Administration commands:*\n"
@@ -771,14 +793,14 @@ async def help_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             + "/deletegroup - to delete one of the registered groups in this bot.\n"
             + "/updatesheet - to update the spreadsheet link for one of the groups.\n"
             + "/invite - Invite new members to go through registration process.\n"
-            + "/open_match_registration - Open the match registration window for the next period.\n"
+            + "/open\_match\_registration - Open the match registration window for the next period.\n"
             + "*Member commands:*\n"
             + "/join - to join the group as a member.\n"
-            + "/join_match - to register for a game.\n"
-            + "/cancel_match - to cancel game participation.\n"
-            + "/replace_me - to replace your participation with other players.\n"
-            + "/list_games - list player future games.\n"
-            + "*Common functions:*\n"
+            + "/join\_match - to register for a game.\n"
+            + "/cancel\_match - to cancel game participation.\n"
+            + "/replace\_me - to replace your participation with other players.\n"
+            + "/list\_games - list player future games.\n"
+            + "*Common commands:*\n"
             + "/help - to see this message.\n"
             + "/getgroupid - add this bot to your channel to get group ID for registration.\n",
             parse_mode="Markdown"
@@ -798,7 +820,53 @@ def generate_worksheet_name(name: str, start_period: datetime, end_period: datet
 
 
 def is_invalid_weekday(weekday: str) -> bool:
-    return weekday in weekDaysMapping
+    return weekday not in weekDaysMapping
+
+
+def calculate_spreadsheet_row_count(player_count: int):
+    # Number of players for available courts for doubled assumed waiting list, plus some ten rows for spacing
+    return player_count * 2 + 10
+
+
+def calculate_player_count_for_courts(court_count: int):
+    return court_count * 4
+
+
+def fill_spreadsheet_blank(
+    day_count_for_worksheet: int,
+    group_game_day: int,
+    start_date: datetime,
+    player_count: int,
+    worksheet: gspread.worksheet.Worksheet
+):
+    player_start_row = 5
+    next_date = start_date
+    for i in range(1, day_count_for_worksheet + 1):
+        worksheet.update_cell(1, i, weekDaysMapping[next_date.weekday()])
+        # Mark days for the next period in the second row
+        worksheet.update_cell(2, i, next_date.strftime("%d.%m"))
+        if next_date.weekday() == group_game_day:
+            worksheet.update_cell(4, i, "Player list")
+            player_number = 1
+            # Insert numbers for players on game day
+            for j in range(player_start_row, player_start_row + player_count):
+                worksheet.update_cell(j, i, player_number)
+                player_number = player_number + 1
+            # Insert waiting list title and numbers after
+            worksheet.update_cell(player_start_row + player_count + 1, i, "Waiting list")
+            player_number = 1
+            for j in range(player_start_row + player_count + 2, player_start_row + player_count + 2 + player_count):
+                worksheet.update_cell(j, i, player_number)
+                player_number = player_number + 1
+
+        next_date = next_date + timedelta(days=1)
+
+
+async def generate_join_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
+    group_id = update.effective_chat.id
+    bot_username = (await context.bot.get_me()).username
+    return f"https://t.me/{bot_username}?start=join_{group_id}"
+
 
 # Conversation states
 GROUP_ID, GROUP_NAME, WEEKDAY, WEEK_RANGE, SPREADSHEET_LINK, COURT_LIMIT = range(6)
