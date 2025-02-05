@@ -15,7 +15,8 @@ from pymongo import MongoClient
 import re
 from phonenumbers import parse, is_valid_number, NumberParseException
 from email_validator import validate_email, EmailNotValidError
-from bot.spreadsheet import is_spreadsheet_writable, has_worksheet_with_name, create_worksheet, update_group_worksheet
+from bot.spreadsheet import is_spreadsheet_writable, has_worksheet_with_name, create_worksheet, update_group_worksheet, \
+    fetch_all_data_from_worksheet
 import json
 import argparse
 
@@ -921,18 +922,37 @@ def generate_worksheet_name_from_group(group):
     return f"Americano {start_period.strftime('%d.%m')}-{(end_period - timedelta(days=1)).strftime('%d.%m')}"
 
 
-def generate_spreadsheet_cells(group: dict, participants, player_count: int) -> list:
-    """Generates spreadsheet cell mappings based on participants & group game day.
+def generate_spreadsheet_cells(group: dict, participants: list, player_count: int, existing_data: list) -> list:
+    """Generates a complete spreadsheet data structure for batch updates.
 
-    Returns: List of (row, col, value) tuples.
+    Args:
+        group (dict): Group information with game day.
+        participants (list): List of registered players.
+        player_count (int): Max number of players before waiting list.
+        existing_data (list): Existing worksheet data (to avoid overwriting headers).
+
+    Returns:
+        list: 2D array representing the full worksheet content.
     """
-    game_day_column = group["game_day"] + 1  # 1-based index in Google Sheets
-    cells = []
+    game_day_column = group["game_day"]  # Zero-based index in existing_data
+    sheet_data = [row[:] for row in existing_data]  # Copy to avoid modifying original data
 
-    # Row positioning
+    # Determine row positions
     main_list_start_row = 5
     waiting_list_start_row = main_list_start_row + player_count + 2  # After main list + separator
 
+    # Ensure minimum worksheet size
+    max_rows = max(len(sheet_data), waiting_list_start_row + player_count)
+    max_cols = max(len(sheet_data[0]), game_day_column + 1)
+
+    # Expand sheet_data if necessary
+    while len(sheet_data) < max_rows:
+        sheet_data.append([""] * max_cols)
+    for row in sheet_data:
+        while len(row) < max_cols:
+            row.append("")
+
+    # Insert participants
     for idx, player in enumerate(participants):
         if idx < player_count:
             # Main list
@@ -940,12 +960,12 @@ def generate_spreadsheet_cells(group: dict, participants, player_count: int) -> 
         else:
             # Waiting list
             if idx == player_count:
-                cells.append((waiting_list_start_row - 1, game_day_column, "Waiting list"))  # Add separator header
+                sheet_data[waiting_list_start_row - 1][game_day_column] = "Waiting list"
             row = waiting_list_start_row + (idx - player_count)
 
-        cells.append((row, game_day_column, str(idx) + ". " + player))
+        sheet_data[row][game_day_column] = player
 
-    return cells
+    return sheet_data
 
 
 def sync_spreadsheet():
@@ -991,9 +1011,10 @@ def sync_spreadsheet():
             logger.warning(f"Worksheet '{worksheet_name}' not found. Skipping...")
             continue
 
+        existing_data = fetch_all_data_from_worksheet(group["spreadsheet"], worksheet_name)
         for match_date, participants in matches.items():
             player_count = calculate_player_count_for_courts(group["court_limit"])
-            cells = generate_spreadsheet_cells(group, participants, player_count)
+            cells = generate_spreadsheet_cells(group, participants, player_count, existing_data)
             update_group_worksheet(group["spreadsheet"], worksheet_name, cells)
             logger.info(f"Updated worksheet '{worksheet_name}' with {len(cells)} cells.")
 

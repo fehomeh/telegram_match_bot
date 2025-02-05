@@ -1,9 +1,11 @@
 import logging
+from typing import Union, List, Any
+
 import gspread
 from google.oauth2 import service_account
 import os
 
-from gspread import WorksheetNotFound
+from gspread import WorksheetNotFound, ValueRange
 
 
 def is_spreadsheet_writable(spreadsheet_url: str) -> bool:
@@ -42,13 +44,27 @@ def has_worksheet_with_name(spreadsheet_url: str, worksheet_name: str) -> bool:
         return False
 
 
-def update_group_worksheet(spreadsheet_url: str, worksheet_name: str, cells: list):
-    """Writes generated cell data to the Google Spreadsheet."""
+def update_group_worksheet(spreadsheet_url, worksheet_name, updated_data):
+    """Writes entire worksheet data in a single batch update to Google Sheets.
+
+    Args:
+        spreadsheet_url (str): Spreadsheet link.
+        worksheet_name (str): The target worksheet to update.
+        updated_data (list): The full worksheet structure with updated values.
+    """
     client = get_spreadsheet_client()
     spreadsheet = client.open_by_url(spreadsheet_url)
 
     worksheet = spreadsheet.worksheet(worksheet_name)
 
-    # Apply all cell updates
-    for row, col, value in cells:
-        worksheet.update_cell(row, col, value)
+    # Convert list to proper range update format
+    update_range = f"A1:{chr(64+len(updated_data[0]))}{len(updated_data)}"  # E.g., "A1:G20"
+    worksheet.update(update_range, updated_data)
+
+
+def fetch_all_data_from_worksheet(spreadsheet_url: str, worksheet_name: str) -> Union[ValueRange, List[List[Any]]]:
+    client = get_spreadsheet_client()
+    spreadsheet = client.open_by_url(spreadsheet_url)
+    worksheet = spreadsheet.worksheet(worksheet_name)
+
+    return worksheet.get_all_values()
