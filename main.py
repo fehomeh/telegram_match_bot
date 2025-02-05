@@ -15,10 +15,13 @@ from pymongo import MongoClient
 import re
 from phonenumbers import parse, is_valid_number, NumberParseException
 from email_validator import validate_email, EmailNotValidError
-from bot.spreadsheet import is_spreadsheet_writable, has_worksheet_with_name, create_worksheet
+from bot.spreadsheet import is_spreadsheet_writable, has_worksheet_with_name, create_worksheet, update_group_worksheet
 import json
+import argparse
+
 
 # Load environment variables
+LAST_WEEK_DAY_NUMBER = 6
 load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
@@ -143,7 +146,23 @@ async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Conversation to add group step-by-step
 async def start_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admin = admins_collection.find_one({"admin_id": int(update.effective_user.id)})
+    if not is_private_chat(update):
+        bot_link = await get_bot_link(context)
+        await update.message.reply_text(
+            f"🚫 Please start the private conversation with the bot to add group: {bot_link}"
+        )
+        return ConversationHandler.END
+    user_id = int(update.effective_user.id)
+    admin = admins_collection.find_one({"admin_id": user_id})
+    group_count = groups_collection.count_documents({
+        "admin_id": user_id,
+        "deleted_at": None
+    })
+    if group_count >= 3:
+        await update.message.reply_text(
+            "🚫 You have three or more groups. It's not possible to add more."
+        )
+        return ConversationHandler.END
     if not admin:
         await update.message.reply_text(
             "🚫 You are not registered as admin. Please, use the /signup command to signup as administrator first."
@@ -335,9 +354,9 @@ async def update_sheet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Command: /invite (Admin triggers this in the group)
 async def invite_members(update: Update, context: ContextTypes.DEFAULT_TYPE):
     group_id = update.effective_chat.id
-    bot_username = (await context.bot.get_me()).username
+    bot_link = await get_bot_link(context)
 
-    join_link = f"https://t.me/{bot_username}?start={group_id}"
+    join_link = f"{bot_link}?start={group_id}"
 
     keyboard = [
         [InlineKeyboardButton("Join This Group 🎾", url=join_link)]
@@ -362,6 +381,7 @@ async def check_admin_rights(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # Open registration for the next period for the given group
 async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # TODO: Allow opening in PM-s only
     if len(context.args) != 1:
         groups = groups_collection.find({"admin_id": update.effective_user.id})
         await update.message.reply_text(
@@ -378,7 +398,13 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(f"⛔ Group ID {group_id} not found!")
         return
 
-    start_period = group['registration_open_till']
+    start_period = group['registration_open_till'].replace(tzinfo=timezone.utc) #10.02.2025 Day, Friday - 4, now -
+
+    now = datetime.now(timezone.utc)
+    registration_open_day_difference = (start_period - now).days
+    if registration_open_day_difference > LAST_WEEK_DAY_NUMBER - group["game_day"]:
+        await update.message.reply_text(f"You can not open new registration while there are still games to come.")
+        return
     end_period = start_period + timedelta(weeks=group['week_range'])
     sheet_name = generate_worksheet_name('Americano', start_period, end_period)
     if has_worksheet_with_name(group['spreadsheet'], sheet_name):
@@ -405,8 +431,7 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
     # Update registration_open_till in the group if everything succeeds
     await context.bot.send_message(
         chat_id=group_id,
-        text=f"📢 Match registration is now open till *{end_period.strftime('%d.%m.%Y')}*\n Use /join_game to register for a game.",
-        parse_mode="Markdown"
+        text=f"📢 Match registration is now open till {end_period.strftime('%d.%m.%Y')}\n Use /join_game to register for a game."
     )
     # Send the link to a new worksheet in the file
     await update.message.reply_text(f"Worksheet URL: {worksheet.url}")
@@ -626,7 +651,7 @@ async def register_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     member_groups = member_group_collection.find_one({
         "user_id": user_id,
         "group_id": group['group_id'],
-        "status": {"$ne": "active"}
+        "status": "active"
     })
     if member_groups is None:
         await update.message.reply_text("You cannot join matches in this group. Please, contact the administrator.")
@@ -871,6 +896,7 @@ def fill_spreadsheet_blank(
             worksheet.update_cell(player_start_row + player_count + 1, i, "Waiting list")
             player_number = 1
             for j in range(player_start_row + player_count + 2, player_start_row + player_count + 2 + player_count):
+                # TODO: Batch write as cell update hits request limits
                 worksheet.update_cell(j, i, str(player_number))
                 player_number = player_number + 1
 
@@ -884,7 +910,99 @@ async def generate_join_link(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 def is_private_chat(update: Update) -> bool:
+    """Checks if the effective chat type is private"""
     return update.effective_chat.type == CHAT_TYPE_PRIVATE
+
+
+def generate_worksheet_name_from_group(group):
+    """Generates the worksheet name based on registration period."""
+    start_period = group["registration_open_till"] - timedelta(weeks=group["week_range"])
+    end_period = group["registration_open_till"]
+    return f"Americano {start_period.strftime('%d.%m')}-{(end_period - timedelta(days=1)).strftime('%d.%m')}"
+
+
+def generate_spreadsheet_cells(group: dict, participants, player_count: int) -> list:
+    """Generates spreadsheet cell mappings based on participants & group game day.
+
+    Returns: List of (row, col, value) tuples.
+    """
+    game_day_column = group["game_day"] + 1  # 1-based index in Google Sheets
+    cells = []
+
+    # Row positioning
+    main_list_start_row = 5
+    waiting_list_start_row = main_list_start_row + player_count + 2  # After main list + separator
+
+    for idx, player in enumerate(participants):
+        if idx < player_count:
+            # Main list
+            row = main_list_start_row + idx
+        else:
+            # Waiting list
+            if idx == player_count:
+                cells.append((waiting_list_start_row - 1, game_day_column, "Waiting list"))  # Add separator header
+            row = waiting_list_start_row + (idx - player_count)
+
+        cells.append((row, game_day_column, str(idx) + ". " + player))
+
+    return cells
+
+
+def sync_spreadsheet():
+    now = datetime.now(timezone.utc)
+
+    # Get all active groups with valid spreadsheet URLs
+    groups = groups_collection.find({"spreadsheet": {"$ne": None}, "deleted_at": None})
+    groups_by_id = {group["group_id"]: group for group in groups}
+
+    if not groups_by_id:
+        logger.warning("No valid groups found with active spreadsheet links.")
+        return
+
+    # Fetch upcoming matches (not in the past)
+    upcoming_matches = matches_collection.find({"match_date": {"$gte": now}})
+
+    # Map matches by group ID and match date with participant details
+    matches_by_group = {}
+    for match in upcoming_matches:
+        group_id = match["group_id"]
+        match_date = match["match_date"].strftime("%d.%m.%Y")
+
+        if group_id not in matches_by_group:
+            matches_by_group[group_id] = {}
+
+        if match_date not in matches_by_group[group_id]:
+            matches_by_group[group_id][match_date] = []
+
+        # Get player details
+        player = members_collection.find_one({"user_id": match["user_id"]})
+        if player:
+            full_name = f"{player['registration_name']} {player['registration_surname']}"
+            matches_by_group[group_id][match_date].append(full_name)
+
+    for group_id, matches in matches_by_group.items():
+        group = groups_by_id.get(group_id)
+        if not group:
+            logger.warning(f"Skipping group {group_id}: Not found.")
+            continue
+
+        worksheet_name = generate_worksheet_name_from_group(group)
+        if not has_worksheet_with_name(group["spreadsheet"], worksheet_name):
+            logger.warning(f"Worksheet '{worksheet_name}' not found. Skipping...")
+            continue
+
+        for match_date, participants in matches.items():
+            player_count = calculate_player_count_for_courts(group["court_limit"])
+            cells = generate_spreadsheet_cells(group, participants, player_count)
+            update_group_worksheet(group["spreadsheet"], worksheet_name, cells)
+            logger.info(f"Updated worksheet '{worksheet_name}' with {len(cells)} cells.")
+
+    logger.info("Spreadsheet synchronization complete.")
+
+
+async def get_bot_link(context: ContextTypes.DEFAULT_TYPE):
+    bot_name = (await context.bot.get_me()).username
+    return f"https://t.me/{bot_name}"
 
 
 # Conversation states
@@ -946,4 +1064,17 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description="Padel Bot CLI")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["sync_spreadsheet"],
+        help="Run the bot normally or sync the spreadsheet"
+    )
+
+    args = parser.parse_args()
+
+    if args.command == "sync_spreadsheet":
+        sync_spreadsheet()
+    else:
+        main()

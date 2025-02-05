@@ -40,3 +40,15 @@ def has_worksheet_with_name(spreadsheet_url: str, worksheet_name: str) -> bool:
         return True
     except WorksheetNotFound:
         return False
+
+
+def update_group_worksheet(spreadsheet_url: str, worksheet_name: str, cells: list):
+    """Writes generated cell data to the Google Spreadsheet."""
+    client = get_spreadsheet_client()
+    spreadsheet = client.open_by_url(spreadsheet_url)
+
+    worksheet = spreadsheet.worksheet(worksheet_name)
+
+    # Apply all cell updates
+    for row, col, value in cells:
+        worksheet.update_cell(row, col, value)
