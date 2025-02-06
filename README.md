@@ -31,3 +31,10 @@ Member record:
   - Members can see matches on date or range of dates
 - Administration:
   - Admins can ban and un-ban members for a period or permanently
+- More validation:
+  - Amount of groups
+  - Amount of registered players per group
+  - Amount of matches to keep in the DB
+  - Bot throttling
+- Exception handling:
+  - Handle Telegram timeouts

@@ -922,48 +922,56 @@ def generate_worksheet_name_from_group(group):
     return f"Americano {start_period.strftime('%d.%m')}-{(end_period - timedelta(days=1)).strftime('%d.%m')}"
 
 
-def generate_spreadsheet_cells(group: dict, participants: list, player_count: int, existing_data: list) -> list:
+def generate_spreadsheet_cells(match_date: str, participants: list, player_count: int, existing_data: list) -> list:
     """Generates a complete spreadsheet data structure for batch updates.
 
     Args:
-        group (dict): Group information with game day.
-        participants (list): List of registered players.
+        match_date (str): The match date in "DD.MM" format.
+        participants (list): List of player names registered for this match.
         player_count (int): Max number of players before waiting list.
         existing_data (list): Existing worksheet data (to avoid overwriting headers).
 
     Returns:
         list: 2D array representing the full worksheet content.
     """
-    game_day_column = group["game_day"]  # Zero-based index in existing_data
-    sheet_data = [row[:] for row in existing_data]  # Copy to avoid modifying original data
+    # Step 1: Find corresponding column in the worksheet (Row 2 contains dates)
+    header_row = existing_data[1] if len(existing_data) > 1 else []  # Row 2 contains match dates
+    date_to_column = {cell.strip(): col_idx for col_idx, cell in enumerate(header_row)}
 
-    # Determine row positions
-    main_list_start_row = 5
+    if match_date not in date_to_column:
+        logger.warning(f"⚠ Match date '{match_date}' not found in the sheet. Skipping update.")
+        return existing_data  # Return original data unchanged
+
+    game_day_column = date_to_column[match_date]
+
+    # Step 2: Prepare a full copy of the sheet data
+    sheet_data = [row[:] for row in existing_data]
+
+    # Define row positions
+    main_list_start_row = 4  # "Player List" header is at row 4
     waiting_list_start_row = main_list_start_row + player_count + 2  # After main list + separator
 
-    # Ensure minimum worksheet size
+    # Ensure worksheet size is large enough
     max_rows = max(len(sheet_data), waiting_list_start_row + player_count)
     max_cols = max(len(sheet_data[0]), game_day_column + 1)
 
-    # Expand sheet_data if necessary
+    # Expand sheet_data to fit all updates
     while len(sheet_data) < max_rows:
         sheet_data.append([""] * max_cols)
     for row in sheet_data:
         while len(row) < max_cols:
             row.append("")
 
-    # Insert participants
+    # Step 3: Insert players under the correct column
     for idx, player in enumerate(participants):
         if idx < player_count:
-            # Main list
-            row = main_list_start_row + idx
+            row = main_list_start_row + idx  # Main list
         else:
-            # Waiting list
             if idx == player_count:
-                sheet_data[waiting_list_start_row - 1][game_day_column] = "Waiting list"
-            row = waiting_list_start_row + (idx - player_count)
+                sheet_data[waiting_list_start_row - 1][game_day_column] = "Waiting List"  # Add separator
+            row = waiting_list_start_row + (idx - player_count)  # Waiting list
 
-        sheet_data[row][game_day_column] = player
+        sheet_data[row][game_day_column] = f"{idx+1}. {player}"  # Write under the correct match date
 
     return sheet_data
 
@@ -1014,7 +1022,7 @@ def sync_spreadsheet():
         existing_data = fetch_all_data_from_worksheet(group["spreadsheet"], worksheet_name)
         for match_date, participants in matches.items():
             player_count = calculate_player_count_for_courts(group["court_limit"])
-            cells = generate_spreadsheet_cells(group, participants, player_count, existing_data)
+            cells = generate_spreadsheet_cells(match_date, participants, player_count, existing_data)
             update_group_worksheet(group["spreadsheet"], worksheet_name, cells)
             logger.info(f"Updated worksheet '{worksheet_name}' with {len(cells)} cells.")
 

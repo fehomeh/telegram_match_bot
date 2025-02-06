@@ -44,7 +44,7 @@ def has_worksheet_with_name(spreadsheet_url: str, worksheet_name: str) -> bool:
         return False
 
 
-def update_group_worksheet(spreadsheet_url, worksheet_name, updated_data):
+def update_group_worksheet(spreadsheet_url: str, worksheet_name: str, updated_data: list):
     """Writes entire worksheet data in a single batch update to Google Sheets.
 
     Args:
@@ -57,8 +57,7 @@ def update_group_worksheet(spreadsheet_url, worksheet_name, updated_data):
 
     worksheet = spreadsheet.worksheet(worksheet_name)
 
-    # Convert list to proper range update format
-    update_range = f"A1:{chr(64+len(updated_data[0]))}{len(updated_data)}"  # E.g., "A1:G20"
+    update_range = f"A1:{chr(64 + len(updated_data[0]))}{len(updated_data)}"  # E.g., "A1:G20"
     worksheet.update(update_range, updated_data)
 
 
