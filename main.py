@@ -580,7 +580,7 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     members_collection.insert_one(member_data)
     # Erase user data in case something went wrong to restart the whole process
-    context.user_data = {}
+    context.user_data.clear()
     admin = admins_collection.find_one({"groups": str(group_id)})
     if not admin:
         await update.message.reply_text("I cannot find the group you want to register in.")
@@ -602,10 +602,9 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Notify Admin
     await context.bot.send_message(
         chat_id=admin["admin_id"],
-        text=f"📢 New member registered:\n*Name:* {member_data['registration_name']} {member_data['registration_surname']}\n"
-             + f"*Username*: {member_data['messenger_username']}\n"
-             + f"*Phone:* {member_data['registration_phone_number']}\n*Group:*{group['name']}",
-        parse_mode='Markdown'
+        text=f"📢 New member registered:\nName: {member_data['registration_name']} {member_data['registration_surname']}\n"
+             + f"Username: {member_data['messenger_username']}\n"
+             + f"Phone: {member_data['registration_phone_number']}\nGroup:{group['name']}"
     )
 
     return ConversationHandler.END
