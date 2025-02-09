@@ -6,6 +6,7 @@ import pymongo
 from datetime import datetime, timedelta, timezone
 from telegram import Update, ChatMember, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.constants import ChatAction
+from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes, ConversationHandler, MessageHandler, filters, ChatMemberHandler,
     CallbackQueryHandler
@@ -183,7 +184,14 @@ async def start_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def receive_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['group_id'] = update.message.text
     user_id = update.effective_user.id
-    chat_member = await context.bot.get_chat_member(context.user_data['group_id'], user_id)
+    try:
+        chat_member = await context.bot.get_chat_member(context.user_data['group_id'], user_id)
+    except BadRequest:
+        # TODO: Make a flash context for errors - user data should disappear on errors.
+        context.user_data.clear()
+        await update.message.reply_text("Cannot get chat from Telegram.")
+        return ConversationHandler.END
+
     if chat_member.status not in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
         await update.message.reply_text("You must be an admin of this group to add it.")
         return ConversationHandler.END
