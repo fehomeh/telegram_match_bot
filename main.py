@@ -173,7 +173,7 @@ async def start_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚨 *Before we start*, make sure that you granted write access to the spreadsheet "
         + "to the following email: *padelfunbot@padelfun.iam.gserviceaccount.com*\n\n\n"
         + "Now, let's add your group!\n"
-        + "*Tip*: You can get the group ID by adding this bot to the group and using the command /get_group_id.\n\n"
+        + "*Tip*: You can get the group ID by adding this bot to the group and using the command /get\_group\_id.\n\n"
         + "Please, send your Telegram Group ID.",
         parse_mode="Markdown"
     )
@@ -484,6 +484,8 @@ async def start_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if member is not None:
         admin = admins_collection.find_one({"groups": str(group_id)})
         if not admin:
+            # In case there was an error, we need to restart
+            context.user_data = {}
             await message.reply_text(
                 f"I cannot find the group you want to register in. Here is the group ID: *{group_id}*\n"
                 + "Please, contact the group administrator.",
@@ -565,16 +567,6 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Save to DB
     user = update.effective_user
     group_id = context.user_data['group_id']
-    admin = admins_collection.find_one({"groups": str(group_id)})
-    if not admin:
-        await update.message.reply_text("I cannot find the group you want to register in.")
-        return ConversationHandler.END
-
-    group = groups_collection.find_one({"group_id": str(group_id), "admin_id": admin["admin_id"]})
-    if not group:
-        await update.message.reply_text("Admin deleted the group. Registration is not possible.")
-        return ConversationHandler.END
-
     member_data = {
         "registration_name": context.user_data['name'],
         "registration_surname": context.user_data['surname'],
@@ -587,9 +579,21 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "created_at": datetime.now(timezone.utc),
     }
     members_collection.insert_one(member_data)
+    # Erase user data in case something went wrong to restart the whole process
+    context.user_data = {}
+    admin = admins_collection.find_one({"groups": str(group_id)})
+    if not admin:
+        await update.message.reply_text("I cannot find the group you want to register in.")
+        return ConversationHandler.END
+
+    group = groups_collection.find_one({"group_id": str(group_id), "admin_id": admin["admin_id"]})
+    if not group:
+        await update.message.reply_text("Admin deleted the group. Registration is not possible.")
+        return ConversationHandler.END
+
     member_group_collection.insert_one({
         "user_id": user.id,
-        "group_id": context.user_data['group_id'],
+        "group_id": group_id,
         "status": "active"
     })
 
@@ -880,28 +884,52 @@ def fill_spreadsheet_blank(
     player_count: int,
     worksheet: gspread.worksheet.Worksheet
 ):
+    """Fills a Google Sheets worksheet with structured placeholders for a new registration period.
+
+    Args:
+        day_count_for_worksheet (int): Number of days to cover in the worksheet.
+        group_game_day (int): The weekday (0=Monday, 6=Sunday) when games occur.
+        start_date (datetime): The starting date for the worksheet.
+        player_count (int): Number of players per game.
+        worksheet (gspread.worksheet.Worksheet): The Google Sheets worksheet object.
+    """
     player_start_row = 5
     next_date = start_date
-    for i in range(1, day_count_for_worksheet + 1):
-        worksheet.update_cell(1, i, weekDaysMapping[next_date.weekday()])
-        # Mark days for the next period in the second row
-        worksheet.update_cell(2, i, next_date.strftime("%d.%m"))
-        if next_date.weekday() == group_game_day:
-            worksheet.update_cell(4, i, "Player list")
-            player_number = 1
-            # Insert numbers for players on game day
-            for j in range(player_start_row, player_start_row + player_count):
-                worksheet.update_cell(j, i, str(player_number))
-                player_number = player_number + 1
-            # Insert waiting list title and numbers after
-            worksheet.update_cell(player_start_row + player_count + 1, i, "Waiting list")
-            player_number = 1
-            for j in range(player_start_row + player_count + 2, player_start_row + player_count + 2 + player_count):
-                # TODO: Batch write as cell update hits request limits
-                worksheet.update_cell(j, i, str(player_number))
-                player_number = player_number + 1
 
-        next_date = next_date + timedelta(days=1)
+    # Prepare a 2D list to hold the sheet's structure
+    max_cols = day_count_for_worksheet
+    max_rows = player_start_row + (player_count * 2) + 3  # Ensure enough rows for main + waiting list
+
+    # Initialize sheet structure with empty values
+    sheet_data = [["" for _ in range(max_cols)] for _ in range(max_rows)]
+
+    # Populate weekday headers (Row 1) and date headers (Row 2 with full year)
+    for col_idx in range(day_count_for_worksheet):
+        sheet_data[0][col_idx] = weekDaysMapping[next_date.weekday()]
+        sheet_data[1][col_idx] = next_date.strftime("%d.%m.%Y")  # ✅ Added full year to date row
+
+        if next_date.weekday() == group_game_day:
+            # Insert "Player list" header
+            sheet_data[3][col_idx] = "Player list"
+
+            # Insert numbers for main player list
+            for row_offset in range(player_count):
+                sheet_data[player_start_row + row_offset][col_idx] = str(row_offset + 1)
+
+            # Insert "Waiting list" header
+            sheet_data[player_start_row + player_count + 1][col_idx] = "Waiting List"
+
+            # Insert numbers for waiting list
+            for row_offset in range(player_count):
+                sheet_data[player_start_row + player_count + 2 + row_offset][col_idx] = str(row_offset + 1)
+
+        next_date += timedelta(days=1)
+
+    # Convert to batch update format and update the worksheet in one go
+    update_range = f"A1:{chr(64 + max_cols)}{max_rows}"  # Convert column index to letter (A-Z)
+    worksheet.update(range_name=update_range, values=sheet_data)
+
+    logger.info(f"📊 Successfully initialized blank worksheet with {max_rows} rows and {max_cols} columns.")
 
 
 async def generate_join_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str:
