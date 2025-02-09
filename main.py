@@ -604,7 +604,7 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=admin["admin_id"],
         text=f"📢 New member registered:\nName: {member_data['registration_name']} {member_data['registration_surname']}\n"
              + f"Username: {member_data['messenger_username']}\n"
-             + f"Phone: {member_data['registration_phone_number']}\nGroup:{group['name']}"
+             + f"Phone: {member_data['registration_phone_number']}\nGroup: {group['name']}"
     )
 
     return ConversationHandler.END
