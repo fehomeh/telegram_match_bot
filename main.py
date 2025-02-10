@@ -149,10 +149,7 @@ async def get_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Conversation to add group step-by-step
 async def start_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_private_chat(update):
-        bot_link = await get_bot_link(context)
-        await update.message.reply_text(
-            f"🚫 Please start the private conversation with the bot to add group: {bot_link}"
-        )
+        await send_message_about_private_only(update, context)
         return ConversationHandler.END
     user_id = int(update.effective_user.id)
     admin = admins_collection.find_one({"admin_id": user_id})
@@ -179,6 +176,13 @@ async def start_add_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
     return GROUP_ID
+
+
+async def send_message_about_private_only(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    bot_link = await get_bot_link(context)
+    await update.message.reply_text(
+        f"🚫 Please start the private conversation with the bot for this command: {bot_link}"
+    )
 
 
 async def receive_group_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -390,7 +394,9 @@ async def check_admin_rights(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # Open registration for the next period for the given group
 async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # TODO: Allow opening in PM-s only
+    if not is_private_chat(update):
+        await send_message_about_private_only(update, context)
+        return
     if len(context.args) != 1:
         groups = groups_collection.find({"admin_id": update.effective_user.id})
         await update.message.reply_text(
@@ -407,7 +413,6 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(f"⛔ Group ID {group_id} not found!")
         return
 
-    # TODO: Validate if it generates proper end date
     start_period = group["registration_open_till"].replace(tzinfo=timezone.utc)
 
     now = datetime.now(timezone.utc)
