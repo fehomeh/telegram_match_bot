@@ -253,9 +253,9 @@ async def receive_court_limit(update: Update, context: ContextTypes.DEFAULT_TYPE
     now = datetime.now(timezone.utc)
     now_date = now.date()
 
-    now_with_week_range_added = now_date + timedelta(weeks=week_range)
-    days_to_add = 6 - now_with_week_range_added.weekday() + 1
-    open_till = now_date + timedelta(weeks=week_range) + timedelta(days=days_to_add)
+    # now_with_week_range_added = now_date + timedelta(weeks=week_range)
+    # days_to_add = 6 - now_with_week_range_added.weekday() + 1
+    open_till = now_date + timedelta(weeks=week_range)  # + timedelta(days=days_to_add)
 
     registration_open_till = datetime(day=open_till.day, month=open_till.month, year=open_till.year, tzinfo=timezone.utc)
     groups_collection.insert_one({
@@ -407,7 +407,8 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text(f"⛔ Group ID {group_id} not found!")
         return
 
-    start_period = group['registration_open_till'].replace(tzinfo=timezone.utc) #10.02.2025 Day, Friday - 4, now -
+    # TODO: Validate if it generates proper end date
+    start_period = group["registration_open_till"].replace(tzinfo=timezone.utc)
 
     now = datetime.now(timezone.utc)
     registration_open_day_difference = (start_period - now).days
@@ -426,7 +427,7 @@ async def open_match_registration(update: Update, context: ContextTypes.DEFAULT_
     days_in_next_period = (end_period - start_period).days
     player_count = calculate_player_count_for_courts(group['court_limit'])
     worksheet = create_worksheet(
-        group['spreadsheet'],
+        group["spreadsheet"],
         sheet_name,
         calculate_spreadsheet_row_count(player_count),
         days_in_next_period
@@ -868,7 +869,7 @@ async def send_not_available_spreadsheet_message(message: Message):
 
 
 def generate_worksheet_name(name: str, start_period: datetime, end_period: datetime) -> str:
-    return name + " " + start_period.strftime("%d.%m") + "-" + (end_period - timedelta(days=1)).strftime("%d.%m")
+    return name + " " + start_period.strftime("%d.%m") + "-" + end_period.strftime("%d.%m")
 
 
 def is_invalid_weekday(weekday: str) -> bool:
@@ -900,7 +901,7 @@ def fill_spreadsheet_blank(
         player_count (int): Number of players per game.
         worksheet (gspread.worksheet.Worksheet): The Google Sheets worksheet object.
     """
-    player_start_row = 5
+    player_start_row = 4
     next_date = start_date
 
     # Prepare a 2D list to hold the sheet's structure
@@ -916,8 +917,8 @@ def fill_spreadsheet_blank(
         sheet_data[1][col_idx] = next_date.strftime("%d.%m.%Y")  # ✅ Added full year to date row
 
         if next_date.weekday() == group_game_day:
-            # Insert "Player list" header
-            sheet_data[3][col_idx] = "Player list"
+            # Insert "Player List" header
+            sheet_data[3][col_idx] = "Player List"
 
             # Insert numbers for main player list
             for row_offset in range(player_count):
@@ -954,7 +955,7 @@ def generate_worksheet_name_from_group(group):
     """Generates the worksheet name based on registration period."""
     start_period = group["registration_open_till"] - timedelta(weeks=group["week_range"])
     end_period = group["registration_open_till"]
-    return f"Americano {start_period.strftime('%d.%m')}-{(end_period - timedelta(days=1)).strftime('%d.%m')}"
+    return f"Americano {start_period.strftime('%d.%m')}-{end_period.strftime('%d.%m')}"
 
 
 def generate_spreadsheet_cells(match_date: str, participants: list, player_count: int, existing_data: list) -> list:
