@@ -290,7 +290,7 @@ async def receive_court_limit(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
     player_count = calculate_player_count_for_courts(court_limit)
-    days_in_period = (registration_open_till - now).days
+    days_in_period = (registration_open_till.date() - now_date).days
     worksheet = create_worksheet(
         spreadsheet,
         sheet_name,
