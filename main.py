@@ -927,14 +927,14 @@ def fill_spreadsheet_blank(
 
             # Insert numbers for main player list
             for row_offset in range(player_count):
-                sheet_data[player_start_row + row_offset][col_idx] = str(row_offset + 1)
+                sheet_data[player_start_row + row_offset][col_idx] = str(row_offset + 1) + "."
 
             # Insert "Waiting list" header
             sheet_data[player_start_row + player_count + 1][col_idx] = "Waiting List"
 
             # Insert numbers for waiting list
-            for row_offset in range(player_count):
-                sheet_data[player_start_row + player_count + 2 + row_offset][col_idx] = str(row_offset + 1)
+            for row_offset in range(player_count, player_count * 2):
+                sheet_data[player_start_row + 2 + row_offset][col_idx] = str(row_offset + 1) + "."
 
         next_date += timedelta(days=1)
 
