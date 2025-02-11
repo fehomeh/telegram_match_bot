@@ -993,8 +993,12 @@ def generate_spreadsheet_cells(match_date: str, participants: list, player_count
     waiting_list_start_row = main_list_start_row + player_count + 2  # After main list + separator
 
     # Ensure worksheet size is large enough
-    max_rows = max(len(sheet_data), waiting_list_start_row + player_count)
+    max_rows = max(len(sheet_data), waiting_list_start_row + player_count, len(participants) + waiting_list_start_row)
     max_cols = max(len(sheet_data[0]), game_day_column + 1)
+
+    if len(participants) < player_count * 2:
+        for i in range(len(participants), player_count * 2):
+            participants.append("")
 
     # Expand sheet_data to fit all updates
     while len(sheet_data) < max_rows:
@@ -1029,7 +1033,7 @@ def sync_spreadsheet():
         return
 
     # Fetch upcoming matches (not in the past)
-    upcoming_matches = matches_collection.find({"match_date": {"$gte": now}})
+    upcoming_matches = matches_collection.find({"match_date": {"$gte": now}}).sort("registered_at", pymongo.ASCENDING)
 
     # Map matches by group ID and match date with participant details
     matches_by_group = {}
