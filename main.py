@@ -829,6 +829,10 @@ async def list_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(message, parse_mode="Markdown")
 
 
+async def issue_1_million_dollars(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Granted!\n💸💸💸\nCheck your account!\n🤑🤑🤑")
+
+
 # ========== END OF MEMBER FUNCTIONS ===============
 # ========== UTILS =====================
 # Error handler
@@ -866,7 +870,7 @@ async def help_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_not_available_spreadsheet_message(message: Message):
-    return message.reply_text(
+    await message.reply_text(
         "⛔ I cannot write into given spreadsheet.\n Please, check the url, make sure that email"
         + f" *{os.getenv('GOOGLE_SERVICE_ACCOUNT_EMAIL')}* has write access to it or contact bot administrator and try again.",
         parse_mode="Markdown"
@@ -1133,6 +1137,9 @@ def main():
     # Utils handlers
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler('help', help_message))
+
+    # Easter egg
+    app.add_handler(CommandHandler('get_1_million_dollars', issue_1_million_dollars))
 
     app.run_polling()
 
